@@ -1,33 +1,4 @@
 # *********************************************************************************
-# REopt, Copyright (c) 2019-2020, Alliance for Sustainable Energy, LLC.
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without modification,
-# are permitted provided that the following conditions are met:
-#
-# Redistributions of source code must retain the above copyright notice, this list
-# of conditions and the following disclaimer.
-#
-# Redistributions in binary form must reproduce the above copyright notice, this
-# list of conditions and the following disclaimer in the documentation and/or other
-# materials provided with the distribution.
-#
-# Neither the name of the copyright holder nor the names of its contributors may be
-# used to endorse or promote products derived from this software without specific
-# prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
-# IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
-# INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
-# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-# LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
-# OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
-# OF THE POSSIBILITY OF SUCH DAMAGE.
-# *********************************************************************************
-
 #=
 # Example of an inputs dictionary into the multinode_create_plots function
     # REopt multinode can automatically create a dictionary like this after running the model
@@ -130,7 +101,7 @@ function multinode_create_plots(data_dictionary_for_plots, filepath_for_saving_p
     if Multinode_Inputs.number_of_phases == 1
         REoptPlots.Create_Voltage_Plot(CompiledResults, TimeStamp, data_dictionary_for_plots["voltage_plot_time_step"], folder)
     else
-        @info "The creation of the voltage plots is currently only applicable for single phase systems"
+        REoptPlots.Create_Multiphase_Voltage_Plot(CompiledResults, TimeStamp, data_dictionary_for_plots["voltage_plot_time_step"], folder)
     end
 
     # Plot the power flows on a map, if bus coordinates were provided
@@ -1029,8 +1000,6 @@ function PlotPowerFlows(results, TimeStamp, REopt_timesteps_for_dashboard_InREop
                 line_width = 2
             end
 
-            print("\n The plot size is: $(plot_size)")
-
             for i in 1:length(line_key_values)
                 y_vector = [line_cords[line_key_values[i]][1][1], line_cords[line_key_values[i]][2][1]]
                 x_vector = [line_cords[line_key_values[i]][1][2], line_cords[line_key_values[i]][2][2]]
@@ -1871,4 +1840,273 @@ function create_distribution_system_map(eng_model_or_path, data_math, coordinate
 
 	return p
 end
+
+
+############################### All code below this line was generated using AI #########################################################
+
+function Create_Multiphase_Voltage_Plot(results, TimeStamp, voltage_plot_time_step, folder; file_suffix="")
+    # This function was generated using AI.
+    # Creates an interactive html plot (using PlotlyJS) of the per unit voltage at each bus. Each phase is a different color, and clicking a phase in the legend hides or shows it.
+    # Buttons select the average, maximum, or minimum voltage over the PMD time steps, and a slider selects the voltage at an individual PMD time step.
+    # The voltage_plot_time_step input (a PMD time step) is the time step that is shown when the plot is first opened.
+    Multinode_Inputs = results["Multinode_Inputs"]
+    data_eng = results["PMD_data_eng"]
+    PMD_nw = results["PMD_results"]["nw"]
+
+    DistancesToSourcebus = distances_from_substation_using_line_buses(Multinode_Inputs, data_eng)
+
+    PMD_time_steps = sort(parse.(Int, collect(keys(PMD_nw))))
+    n_time_steps = length(PMD_time_steps)
+
+    # Collect the per unit voltage of each phase at each bus for every PMD time step
+    bus_data = Dict{String,Any}[]
+    phases_in_results = Set{Int}()
+    for bus in sort(string.(collect(keys(DistancesToSourcebus))))
+        haskey(PMD_nw[string(PMD_time_steps[1])]["bus"], bus) || continue
+        terminals = haskey(data_eng["bus"], bus) ? data_eng["bus"][bus]["terminals"] : Int[]
+
+        voltages_by_phase = Dict{Int,Vector{Union{Nothing,Float64}}}()
+        for (index, PMD_time_step) in enumerate(PMD_time_steps)
+            phase_voltages = multiphase_bus_voltages_pu(PMD_nw[string(PMD_time_step)]["bus"][bus], terminals)
+            for (phase, voltage) in phase_voltages
+                voltages = get!(() -> Union{Nothing,Float64}[nothing for _ in 1:n_time_steps], voltages_by_phase, phase)
+                voltages[index] = voltage
+            end
+        end
+        isempty(voltages_by_phase) && continue
+
+        union!(phases_in_results, keys(voltages_by_phase))
+        push!(bus_data, Dict("id" => bus,
+                             "x" => Float64(DistancesToSourcebus[bus]),
+                             "v" => Dict(string(phase) => voltages for (phase, voltages) in voltages_by_phase)))
+    end
+    isempty(bus_data) && throw(@error("Bus voltage results data is not available"))
+
+    # Collect the lines and transformers that connect the buses
+    bus_ids = Set(bus["id"] for bus in bus_data)
+    links = Dict{String,Any}[]
+    for name in sort(string.(collect(keys(data_eng["line"]))))
+        line = data_eng["line"][name]
+        f_bus, t_bus = string(line["f_bus"]), string(line["t_bus"])
+        (f_bus in bus_ids && t_bus in bus_ids) || continue
+        phases = sort(filter(p -> p in 1:3, Int.(get(line, "f_connections", Int[]))))
+        push!(links, Dict("f" => f_bus, "t" => t_bus, "phases" => phases, "kind" => "line"))
+    end
+    for name in sort(string.(collect(keys(get(data_eng, "transformer", Dict())))))
+        transformer = data_eng["transformer"][name]
+        transformer_buses = string.(get(transformer, "bus", String[]))
+        connections = get(transformer, "connections", [])
+        for i in 1:(length(transformer_buses) - 1)
+            (transformer_buses[i] in bus_ids && transformer_buses[i+1] in bus_ids) || continue
+            phases = i <= length(connections) ? sort(filter(p -> p in 1:3, Int.(connections[i]))) : Int[]
+            push!(links, Dict("f" => transformer_buses[i], "t" => transformer_buses[i+1], "phases" => phases, "kind" => "transformer"))
+        end
+    end
+
+    REopt_time_steps = collect(Iterators.flatten(Multinode_Inputs.PMD_time_steps)) # Flatten so that inputs like [1:24] and [1,2,3] are both handled
+    REopt_time_steps_known = length(REopt_time_steps) == n_time_steps
+    initial_time_step = clamp(voltage_plot_time_step, 1, n_time_steps)
+
+    bus_x = Dict(bus["id"] => bus["x"] for bus in bus_data)
+    phases = sort(collect(phases_in_results))
+    phase_colors = Dict(1 => "#d62728", 2 => "#1f77b4", 3 => "#2ca02c")
+
+    # Each data choice (average, maximum, minimum, or the voltage at one time step) is drawn as its own set of traces.
+    # The menu buttons and the slider show one choice at a time by changing which traces are visible.
+    values_present(voltages) = [v for v in voltages if v !== nothing]
+    data_choices = Any[
+        (name = "Average voltage", hover_name = "Average voltage", title = "average voltage over all PMD time steps",
+         value = voltages -> (present = values_present(voltages); isempty(present) ? nothing : sum(present) / length(present))),
+        (name = "Maximum voltage", hover_name = "Maximum voltage", title = "maximum voltage over all PMD time steps",
+         value = voltages -> (present = values_present(voltages); isempty(present) ? nothing : maximum(present))),
+        (name = "Minimum voltage", hover_name = "Minimum voltage", title = "minimum voltage over all PMD time steps",
+         value = voltages -> (present = values_present(voltages); isempty(present) ? nothing : minimum(present))),
+    ]
+    for t in 1:n_time_steps
+        reopt_label = REopt_time_steps_known ? " (REopt time step $(REopt_time_steps[t]))" : ""
+        push!(data_choices, (name = "Time step $(t)", hover_name = "Voltage", title = "PMD time step $(t)"*reopt_label,
+                             value = voltages -> voltages[t]))
+    end
+    initial_choice = length(data_choices) - n_time_steps + initial_time_step
+
+    traces = PlotlyJS.GenericTrace[]
+    trace_indices_for_choice = Vector{Int}[]
+    for (choice_index, choice) in enumerate(data_choices)
+        trace_indices = Int[]
+        is_visible = (choice_index == initial_choice)
+
+        for phase in phases
+            color = phase_colors[phase]
+            group_name = "Phase $(phase)"
+
+            heights = Dict{String,Float64}()
+            for bus in bus_data
+                haskey(bus["v"], string(phase)) || continue
+                value = choice.value(bus["v"][string(phase)])
+                value === nothing || (heights[bus["id"]] = value)
+            end
+            isempty(heights) && continue
+
+            for kind in ("line", "transformer")
+                x = Union{Nothing,Float64}[]
+                y = Union{Nothing,Float64}[]
+                for link in links
+                    link["kind"] == kind || continue
+                    (isempty(link["phases"]) || phase in link["phases"]) || continue
+                    (haskey(heights, link["f"]) && haskey(heights, link["t"])) || continue
+                    append!(x, [bus_x[link["f"]], bus_x[link["t"]], nothing])
+                    append!(y, [heights[link["f"]], heights[link["t"]], nothing])
+                end
+                isempty(x) && continue
+                push!(traces, PlotlyJS.scatter(x = x, y = y, mode = "lines", hoverinfo = "skip", showlegend = false, legendgroup = group_name, visible = is_visible,
+                                               line = PlotlyJS.attr(width = 0.4, color = color, dash = kind == "line" ? "solid" : "4px,2px")))
+                push!(trace_indices, length(traces))
+            end
+
+            bus_ids_with_data = [bus["id"] for bus in bus_data if haskey(heights, bus["id"])]
+            hover_text = ["Bus $(id)<br>$(group_name)<br>$(choice.hover_name) (p.u.): $(round(heights[id], digits = 6))" for id in bus_ids_with_data]
+            push!(traces, PlotlyJS.scatter(x = [bus_x[id] for id in bus_ids_with_data], y = [heights[id] for id in bus_ids_with_data],
+                                           mode = "markers", name = group_name, legendgroup = group_name, showlegend = true, visible = is_visible,
+                                           hovertext = hover_text, hoverinfo = "text", marker = PlotlyJS.attr(size = 2, color = color)))
+            push!(trace_indices, length(traces))
+        end
+        push!(trace_indices_for_choice, trace_indices)
+    end
+
+    # For each data choice, the list that sets which traces are visible, and the plot title
+    visibility_for_choice = [[i in trace_indices for i in 1:length(traces)] for trace_indices in trace_indices_for_choice]
+    title_for_choice = ["Voltage at each bus: "*choice.title for choice in data_choices]
+    # The slider's own current value display cannot be changed by the buttons, so a text annotation (annotation number 3, which is index 2 in the plotting library) shows the slider status instead
+    time_step_status_annotation = "annotations[2].text"
+    time_step_status_when_buttons_selected = "Individual time step not shown because the maximum, average, or minimum voltage button was selected"
+    update_args(choice_index, status_text) = [Dict("visible" => visibility_for_choice[choice_index]),
+                                              Dict("title.text" => title_for_choice[choice_index], time_step_status_annotation => status_text)]
+
+    # Buttons for the average, maximum, and minimum voltage, placed beneath the legend
+    buttons = [PlotlyJS.attr(label = data_choices[i].name, method = "update", args = update_args(i, time_step_status_when_buttons_selected)) for i in 1:3]
+    update_menus = [PlotlyJS.attr(type = "buttons", direction = "down", buttons = buttons, active = -1, showactive = true,
+                                  x = 1.02, xanchor = "left", y = 0.7, yanchor = "top")]
+
+    # Slider for the individual time steps (only some of the steps are labeled when there are many time steps)
+    time_step_status(t) = "Individual time step (PMD time step): $(t)"
+    label_every = max(1, ceil(Int, n_time_steps / 20))
+    slider_steps = [PlotlyJS.attr(label = ((t - 1) % label_every == 0 || t == n_time_steps) ? string(t) : "", method = "update", args = update_args(3 + t, time_step_status(t))) for t in 1:n_time_steps]
+    sliders = [PlotlyJS.attr(active = initial_time_step - 1, steps = slider_steps, x = 0.05, len = 0.9, y = -0.12, pad = PlotlyJS.attr(t = 20),
+                             currentvalue = PlotlyJS.attr(visible = false))]
+
+    available_time_steps_label = "Available PMD time steps: 1 to $(n_time_steps)"
+    REopt_time_steps_known && (available_time_steps_label *= " (REopt time steps: "*compress_integer_ranges(REopt_time_steps)*")")
+    annotations = [PlotlyJS.attr(text = available_time_steps_label, xref = "paper", yref = "paper", x = 0.0, y = -0.35, xanchor = "left", showarrow = false),
+                   PlotlyJS.attr(text = "Solid lines: distribution lines<br>Dashed lines: transformers", xref = "paper", yref = "paper", x = 1.02, y = 0.0, xanchor = "left", yanchor = "bottom",
+                                 align = "left", showarrow = false, bordercolor = "black", borderwidth = 1, borderpad = 4, bgcolor = "white"),
+                   PlotlyJS.attr(text = time_step_status(initial_time_step), xref = "paper", yref = "paper", x = 0.05, y = -0.125, xanchor = "left", yanchor = "top", showarrow = false)]
+
+    # Use the same y axis range for every data choice, based on the voltages over all buses, phases, and PMD time steps
+    all_voltages = [v for bus in bus_data for voltages in values(bus["v"]) for v in voltages if v !== nothing]
+    y_min, y_max = extrema(all_voltages)
+    y_padding = max(0.1 * (y_max - y_min), 0.005)
+    y_axis_range = [y_min - y_padding, y_max + y_padding]
+
+    layout = PlotlyJS.Layout(title_text = title_for_choice[initial_choice], xaxis_title_text = "Distance from Substation", yaxis_title_text = "Per Unit Voltage", yaxis_range = y_axis_range,
+                             legend_title_text = "Click a phase to hide or show it", hovermode = "closest", height = 740,
+                             margin = PlotlyJS.attr(t = 120, b = 180), updatemenus = update_menus, sliders = sliders, annotations = annotations)
+    figure = PlotlyJS.Plot(traces, layout)
+
+    # As in Create_Voltage_Plot, the plotly.js library is not embedded in the html file (the file links to it instead)
+    PlotlyJS.savefig(figure, folder*"/MultiphaseVoltagePlot_InteractivePlot"*file_suffix*".html")
+end
+
+
+function distances_from_substation_using_line_buses(Multinode_Inputs, data_eng)
+    # This function was generated with the assistance of AI
+    # Returns a dictionary with the distance (the sum of the line lengths along the path) from the substation to each bus.
+    # REopt.DetermineDistanceFromSourcebus finds the lines on a path by assuming that the line names are "line<bus1>_<bus2>", which gives
+    # distances of zero when the lines have other names. Here, the lines are instead matched using their from and to buses.
+    paths = REopt.DetermineDistanceFromSourcebus(Multinode_Inputs, data_eng)[4]
+
+    segment_lengths = Dict{Tuple{String,String},Float64}()
+    for (name, line) in data_eng["line"]
+        f_bus, t_bus = string(line["f_bus"]), string(line["t_bus"])
+        line_length = Float64(get(line, "length", 0.0))
+        get!(segment_lengths, (f_bus, t_bus), line_length)
+        get!(segment_lengths, (t_bus, f_bus), line_length)
+    end
+
+    # Transformers and switches are not lines, so they do not add any distance
+    distances = Dict{String,Float64}()
+    for (bus, path) in paths
+        distances[string(bus)] = sum((get(segment_lengths, (string(path[j]), string(path[j+1])), 0.0) for j in 1:(length(path)-1)); init = 0.0)
+    end
+
+    if all(iszero, values(distances))
+        @warn "The line lengths in the network data are all zero, so the distance from the substation in the multiphase voltage plot is the number of segments from the substation instead."
+        for (bus, path) in paths
+            distances[string(bus)] = Float64(length(path) - 1)
+        end
+    end
+
+    return distances
+end
+
+
+function multiphase_bus_voltages_pu(bus_result, terminals)
+    # Returns a dictionary of the per unit voltage magnitude for each phase (1, 2, or 3) at a bus, for one PMD time step
+    apply_to_values(f, x) = x isa AbstractDict ? Dict(k => f(v) for (k, v) in x) : [f(v) for v in x]
+    
+    if haskey(bus_result, "w")
+        magnitudes = apply_to_values(w -> sqrt(max(w, 0.0)), bus_result["w"]) # "w" is the per unit voltage squared; the square root gives the per unit voltage, as in Create_Voltage_Plot
+    elseif haskey(bus_result, "Wr")
+        Wr = bus_result["Wr"]
+        n_entries = Wr isa AbstractMatrix ? size(Wr, 1) : length(Wr)
+        magnitudes = [sqrt(max(Wr isa AbstractMatrix ? Wr[i, i] : Wr[i][i], 0.0)) for i in 1:n_entries]
+    else
+        throw(@error("Bus voltage results data is not available"))
+    end
+
+    phase_voltages = Dict{Int,Float64}()
+    if magnitudes isa AbstractDict
+        for (key, magnitude) in magnitudes
+            phase = key isa Integer ? Int(key) : tryparse(Int, string(key))
+            phase in 1:3 && (phase_voltages[phase] = Float64(magnitude))
+        end
+    else
+        # The voltage entries follow the order of the bus terminals; the neutral terminal (4) might or might not be included in the results
+        terminals = collect(terminals)
+        if length(terminals) != length(magnitudes)
+            terminals_without_neutral = filter(!=(4), terminals)
+            terminals = length(terminals_without_neutral) == length(magnitudes) ? terminals_without_neutral : collect(1:length(magnitudes))
+        end
+        for (i, terminal) in enumerate(terminals)
+            terminal in 1:3 && (phase_voltages[Int(terminal)] = Float64(magnitudes[i]))
+        end
+    end
+
+    return phase_voltages
+end
+
+
+function compress_integer_ranges(values)
+    # Converts a vector of integers into a compact label, for example [1,2,3,7,9,10] becomes "1-3, 7, 9-10"
+    sorted_values = sort(unique(Int.(values)))
+    isempty(sorted_values) && return ""
+    pieces = String[]
+    range_start = previous = sorted_values[1]
+    for value in vcat(sorted_values[2:end], [nothing])
+        if value !== nothing && value == previous + 1
+            previous = value
+            continue
+        end
+        push!(pieces, range_start == previous ? string(range_start) : string(range_start, "-", previous))
+        if value !== nothing
+            range_start = previous = value
+        end
+    end
+    return join(pieces, ", ")
+end
+
+
+
+
+
+
 
