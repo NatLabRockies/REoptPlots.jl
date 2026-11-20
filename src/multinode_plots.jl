@@ -1959,7 +1959,7 @@ function Create_Multiphase_Voltage_Plot(results, TimeStamp, voltage_plot_time_st
                 end
                 isempty(x) && continue
                 push!(traces, PlotlyJS.scatter(x = x, y = y, mode = "lines", hoverinfo = "skip", showlegend = false, legendgroup = group_name, visible = is_visible,
-                                               line = PlotlyJS.attr(width = 0.4, color = color, dash = kind == "line" ? "solid" : "4px,2px")))
+                                               line = PlotlyJS.attr(width = 1.125, color = color, dash = kind == "line" ? "solid" : "4px,2px")))
                 push!(trace_indices, length(traces))
             end
 
@@ -1967,7 +1967,7 @@ function Create_Multiphase_Voltage_Plot(results, TimeStamp, voltage_plot_time_st
             hover_text = ["Bus $(id)<br>$(group_name)<br>$(choice.hover_name) (p.u.): $(round(heights[id], digits = 6))" for id in bus_ids_with_data]
             push!(traces, PlotlyJS.scatter(x = [bus_x[id] for id in bus_ids_with_data], y = [heights[id] for id in bus_ids_with_data],
                                            mode = "markers", name = group_name, legendgroup = group_name, showlegend = true, visible = is_visible,
-                                           hovertext = hover_text, hoverinfo = "text", marker = PlotlyJS.attr(size = 2, color = color)))
+                                           hovertext = hover_text, hoverinfo = "text", marker = PlotlyJS.attr(size = 6, color = color)))
             push!(trace_indices, length(traces))
         end
         push!(trace_indices_for_choice, trace_indices)
